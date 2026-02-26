@@ -6,13 +6,19 @@ import numpy as np
 import plotly.graph_objects as go
 import datetime
 import os
+import json
 import warnings
+import requests
+import re
+
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. 页面配置
+# 1. 云端/本地 环境适配 (防崩溃单线版)
 # ==========================================
-st.set_page_config(layout="wide", page_title="全球 RRG (V23.1 完美修复版)")
+os.environ['NO_PROXY'] = '*'
+
+st.set_page_config(layout="wide", page_title="全球 RRG (V62 极致定型版)")
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; }
@@ -24,27 +30,60 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.title("🚀 全球 RRG 极速分析系统 (V62 完美闭环版)")
+
 # ==========================================
-# 2. 核心数据库与弹药库
+# 2. 核心本地数据库与 31 大 ETF 兵器库
 # ==========================================
 DATA_DIR = "rrg_data_warehouse"
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
-A_SECTOR_CONFIG = {
-    "煤炭": {"etf": "sh515220", "keyword": "煤炭"}, "钢铁": {"etf": "sh515210", "keyword": "钢铁"},
-    "有色": {"etf": "sh512400", "keyword": "有色"}, "石油": {"etf": "sh561360", "keyword": "石油"},
-    "电力": {"etf": "sh561560", "keyword": "电力"}, "化工": {"etf": "sh516020", "keyword": "化学"},
-    "银行": {"etf": "sh512800", "keyword": "银行"}, "证券": {"etf": "sh512880", "keyword": "证券"},
-    "保险": {"etf": "sh515050", "keyword": "保险"}, "房地产": {"etf": "sh512200", "keyword": "房地产"},
-    "半导体": {"etf": "sh512480", "keyword": "半导体"}, "芯片": {"etf": "sz159995", "keyword": "半导体"},
-    "光伏": {"etf": "sh515790", "keyword": "光伏"}, "新能车": {"etf": "sh515030", "keyword": "汽车整车"},
-    "电池": {"etf": "sz159755", "keyword": "电池"}, "白酒": {"etf": "sh512690", "keyword": "酿酒"},
-    "医药": {"etf": "sh512010", "keyword": "医药"}, "家电": {"etf": "sh561120", "keyword": "家电"},
-    "游戏": {"etf": "sh516770", "keyword": "游戏"}, "养殖": {"etf": "sz159865", "keyword": "农牧"},
-    "通信": {"etf": "sh515880", "keyword": "通信"}, "计算机": {"etf": "sz159998", "keyword": "计算机"}
+# 满血 31 大核心 ETF 池
+A_ETF_CONFIG = {
+    "sh515220": "煤炭ETF", "sh515210": "钢铁ETF", "sh512400": "有色ETF",
+    "sh561360": "石油ETF", "sh561560": "电力ETF", "sh516020": "化工ETF",
+    "sh512800": "银行ETF", "sh512880": "证券ETF", "sh515050": "保险ETF",
+    "sh512200": "房地产ETF", "sh512480": "半导体ETF", "sh515790": "光伏ETF",
+    "sh515030": "新能车ETF", "sz159755": "电池ETF", "sh512690": "酒ETF",
+    "sh512010": "医药ETF", "sh512170": "医疗ETF", "sh561120": "家电ETF",
+    "sh516770": "游戏ETF", "sh512980": "传媒ETF", "sz159865": "养殖ETF",
+    "sh515880": "通信ETF", "sz159998": "计算机ETF", "sh512660": "军工ETF",
+    "sh516530": "物流ETF", "sh562510": "旅游ETF", "sh512580": "环保ETF",
+    "sh512530": "建材ETF", "sh516100": "基建ETF", "sz159886": "机械ETF",
+    "sh510150": "消费ETF"
 }
 
-# 11大标准GICS行业 + 专属基建
+# 🌟 V62 核心闭环：将新浪细分行业反向映射到 31 大 ETF
+ETF_KEYWORD_MAP = {
+    "煤炭": "sh515220", "钢铁": "sh515210", "有色": "sh512400", "金属": "sh512400",
+    "石油": "sh561360", "电力": "sh561560", "发电": "sh515790", "化工": "sh516020", 
+    "化纤": "sh516020", "塑料": "sh516020", "橡胶": "sh516020",
+    "银行": "sh512800", "金融": "sh512800", "证券": "sh512880", "保险": "sh515050", 
+    "房地": "sh512200", "园区": "sh512200", 
+    "半导": "sh512480", "元器件": "sh512480", "光伏": "sh515790", 
+    "汽车": "sh515030", "电池": "sz159755", "酿酒": "sh512690", "酒": "sh512690", 
+    "医药": "sh512010", "制药": "sh512010", "生物": "sh512010", "医疗": "sh512170", 
+    "家电": "sh561120", "电器": "sh561120", "游戏": "sh516770", "传媒": "sh512980",
+    "娱乐": "sh516770", "农牧": "sz159865", "养殖": "sz159865", "农业": "sz159865",
+    "通信": "sh515880", "计算": "sz159998", "软件": "sz159998", "互联网": "sz159998",
+    "军工": "sh512660", "船舶": "sh512660", "航天": "sh512660", "飞机": "sh512660",
+    # 细分板块兜底
+    "交运": "sh516530", "交通": "sh516530", "物流": "sh516530", "公路": "sh516530", 
+    "桥梁": "sh516530", "机场": "sh516530", "港口": "sh516530", "航空": "sh516530",
+    "旅游": "sh562510", "酒店": "sh562510", "餐饮": "sh562510",
+    "环保": "sh512580", "供水": "sh512580", "水务": "sh512580", "供气": "sh561560",
+    "建材": "sh512530", "水泥": "sh512530", "玻璃": "sh512530",
+    "建筑": "sh516100", "工程": "sh516100", "机械": "sz159886", "机床": "sz159886", 
+    "仪器": "sz159886", "消费": "sh510150", "百货": "sh510150", "商贸": "sh510150", 
+    "商业": "sh510150", "纺织": "sh510150", "服装": "sh510150", "轻工": "sh510150", 
+    "造纸": "sh510150", "家具": "sh510150", "包装": "sh510150"
+}
+
+ETF_TO_KEYWORDS = {}
+for kw, etf in ETF_KEYWORD_MAP.items():
+    ETF_TO_KEYWORDS.setdefault(etf, []).append(kw)
+
+# 满血复原：美股 12 大板块 100% 找回
 US_SECTOR_CONFIG = {
     "科技 (XLK)": {"etf": "XLK", "stocks": {"AAPL":"苹果", "MSFT":"微软", "NVDA":"英伟达", "AVGO":"博通", "ADBE":"Adobe", "CRM":"赛富时", "AMD":"AMD", "ACN":"埃森哲", "CSCO":"思科", "INTC":"英特尔"}},
     "医疗健康 (XLV)": {"etf": "XLV", "stocks": {"LLY":"礼来", "UNH":"联合健康", "JNJ":"强生", "MRK":"默沙东", "ABBV":"艾伯维", "TMO":"赛默飞", "ABT":"雅培", "PFE":"辉瑞", "DHR":"丹纳赫", "AMGN":"安进"}},
@@ -57,90 +96,120 @@ US_SECTOR_CONFIG = {
     "房地产 (XLRE)": {"etf": "XLRE", "stocks": {"PLD":"普洛斯", "AMT":"美国电塔", "EQIX":"易昆尼克斯", "CCI":"冠城国际", "PSA":"大众仓储", "O":"RealtyIncome", "SPG":"西蒙地产", "WELL":"Welltower", "DLR":"数字房地产", "CSGP":"CoStar"}},
     "材料 (XLB)": {"etf": "XLB", "stocks": {"LIN":"林德", "SHW":"宣伟", "FCX":"自由港", "ECL":"艺康", "APD":"空气化工", "NEM":"纽蒙特", "DOW":"陶氏", "NUE":"纽柯", "CTVA":"科迪华", "VMC":"火神材料"}},
     "通信服务 (XLC)": {"etf": "XLC", "stocks": {"GOOGL":"谷歌A", "META":"Meta", "NFLX":"奈飞", "TMUS":"T-Mobile", "DIS":"迪士尼", "VZ":"威瑞森", "CMCSA":"康卡斯特", "T":"AT&T", "CHTR":"特许通讯", "EA":"EA游戏"}},
-    "本土基建异动 (AIRR)": {"etf": "AIRR", "stocks": {"STRL":"Sterling", "MTZ":"MasTec", "EME":"EMCOR", "FIX":"Comfort", "PRIM":"Primoris", "DY":"Dycom", "PWR":"Quanta", "URI":"UnitedRent", "PAVE":"PAVE基建", "XHB":"建筑商"}}
+    "本土基建 (AIRR)": {"etf": "AIRR", "stocks": {"STRL":"Sterling", "MTZ":"MasTec", "EME":"EMCOR", "FIX":"Comfort", "PRIM":"Primoris", "DY":"Dycom", "PWR":"Quanta", "URI":"UnitedRent", "PAVE":"PAVE基建", "XHB":"建筑商"}}
 }
 
 # ==========================================
-# 3. 数据层与侧边栏
+# 3. 极速本地化抓取引擎
 # ==========================================
-@st.cache_data(ttl=3600)
-def get_real_board_code(keyword):
+@st.cache_data(ttl=86400)
+def get_sina_board_mapping():
+    local_file = os.path.join(DATA_DIR, "sina_boards.json")
     try:
-        df = ak.stock_board_industry_name_em()
-        target = df[df['板块名称'] == keyword]
-        if target.empty: target = df[df['板块名称'].str.contains(keyword)]
-        if not target.empty: return target.iloc[0]['板块名称'], target.iloc[0]['板块代码']
-        return None, None
-    except: return None, None
-
-@st.cache_data(ttl=3600)
-def get_constituents_safe(board_name, limit):
-    try:
-        df = ak.stock_board_industry_cons_em(symbol=board_name)
-        for col in ['总市值', '总市值(元)', '流通市值']:
-            if col in df.columns:
-                df = df.sort_values(by=col, ascending=False)
-                break
-        df = df.head(limit)
-        res = {}
-        for _, row in df.iterrows():
-            code = str(row['代码'])
-            fc = f"sh{code}" if code.startswith(('6','9','5')) else f"sz{code}"
-            res[fc] = row['名称']
-        return res
-    except: return {}
-
-def fetch_net_us(code, period_code):
-    try:
-        if period_code in ['1h', '60m']: start = (datetime.datetime.now() - datetime.timedelta(days=700)).strftime("%Y-%m-%d")
-        elif period_code in ['15m']: start = (datetime.datetime.now() - datetime.timedelta(days=50)).strftime("%Y-%m-%d")
-        else: start = "2023-01-01"
-        df = yf.Ticker(code).history(interval=period_code, start=start)
-        if df.empty: return None
-        df = df.reset_index()
-        time_col = df.columns[0]
-        df['date'] = df[time_col].dt.tz_localize(None)
-        return df.set_index('date')[['Close']].rename(columns={'Close':'close'})
-    except: return None
-
-def fetch_net_a(code, start_date):
-    try:
-        if any(x in code for x in ['51','15','56']): df = ak.fund_etf_hist_sina(symbol=code)
-        else: df = ak.stock_zh_index_daily(symbol=code)
+        df = ak.stock_sector_spot(indicator="新浪行业")
         if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-            return df.set_index('date')[['close']]
+            mapping = dict(zip(df['板块'], df['label']))
+            with open(local_file, 'w', encoding='utf-8') as f: json.dump(mapping, f, ensure_ascii=False)
+            return mapping
     except: pass
+    if os.path.exists(local_file):
+        with open(local_file, 'r', encoding='utf-8') as f: return json.load(f)
+    return {"半导体": "new_bdt", "交通运输": "new_jtys"}
+
+@st.cache_data(ttl=3600)
+def get_constituents_safe(sina_label, limit):
+    local_file = os.path.join(DATA_DIR, f"cons_{sina_label}.json")
     try:
-        clean = code.replace("sh","").replace("sz","")
-        df = ak.stock_zh_a_hist(symbol=clean, start_date=start_date.replace("-", ""), adjust="qfq")
+        url = f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1&num={limit}&sort=amount&asc=0&node={sina_label}"
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+        text = re.sub(r'([{,])([a-zA-Z0-9_]+):', r'\1"\2":', resp.text)
+        data = json.loads(text)
+        df = pd.DataFrame(data)
+        
         if not df.empty:
-            df['日期'] = pd.to_datetime(df['日期'])
-            return df.set_index('日期')[['收盘']].rename(columns={'收盘':'close'})
+            res = {}
+            for _, row in df.iterrows():
+                code = str(row['symbol']).strip() 
+                name = str(row['name']).strip()
+                clean_code = code.replace('sh', '').replace('sz', '')
+                fc = f"sh{clean_code}" if clean_code.startswith(('6','9','5')) else f"sz{clean_code}"
+                res[fc] = name
+            with open(local_file, 'w', encoding='utf-8') as f: json.dump(res, f, ensure_ascii=False)
+            return res
     except: pass
+    if os.path.exists(local_file):
+        with open(local_file, 'r', encoding='utf-8') as f: return json.load(f)
+    return {}
+
+# ==========================================
+# 4. 单线安全 K 线下载与深度缓存
+# ==========================================
+def fetch_kline_safe(code, start_date, is_us, p_code):
+    if is_us:
+        try:
+            if p_code in ['1h', '60m']: start = (datetime.datetime.now() - datetime.timedelta(days=700)).strftime("%Y-%m-%d")
+            elif p_code in ['15m']: start = (datetime.datetime.now() - datetime.timedelta(days=50)).strftime("%Y-%m-%d")
+            else: start = "2023-01-01"
+            df = yf.Ticker(code).history(interval=p_code, start=start)
+            if not df.empty:
+                df = df.reset_index()
+                df['date'] = pd.to_datetime(df[df.columns[0]]).dt.tz_localize(None)
+                return df.set_index('date')[['Close']].rename(columns={'Close':'close'})
+        except: return None
+    else:
+        if any(x in code for x in ['51','15','56']):
+            try:
+                df = ak.fund_etf_hist_sina(symbol=code)
+                if not df.empty:
+                    df['date'] = pd.to_datetime(df['date'])
+                    return df.set_index('date')[['close']]
+            except: pass
+        try:
+            url = f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={code}&scale=240&ma=no&datalen=800"
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+            text = re.sub(r'([{,])([a-zA-Z0-9_]+):', r'\1"\2":', resp.text)
+            df = pd.DataFrame(json.loads(text))
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['day'])
+                df = df[df['date'] >= pd.to_datetime(start_date)]
+                return df.set_index('date')[['close']].astype(float)
+        except: pass
+        try:
+            yf_code = code.replace("sh", "") + ".SS" if "sh" in code else code.replace("sz", "") + ".SZ"
+            df = yf.Ticker(yf_code).history(start=start_date)
+            if not df.empty:
+                df = df.reset_index()
+                df['date'] = pd.to_datetime(df[df.columns[0]]).dt.tz_localize(None)
+                return df.set_index('date')[['Close']].rename(columns={'Close':'close'})
+        except: pass
     return None
 
 def get_data_smart(code, start_date, force_refresh, is_us, p_code):
     file_path = os.path.join(DATA_DIR, f"{code}_{p_code}.csv" if is_us else f"{code}.csv")
     if os.path.exists(file_path) and not force_refresh:
-        if datetime.date.fromtimestamp(os.path.getmtime(file_path)) == datetime.date.today():
+        mtime = datetime.date.fromtimestamp(os.path.getmtime(file_path))
+        if mtime == datetime.date.today():
             try: return pd.read_csv(file_path, index_col=0, parse_dates=True)['close']
             except: pass
-    df_new = fetch_net_us(code, p_code) if is_us else fetch_net_a(code, start_date)
+            
+    df_new = fetch_kline_safe(code, start_date, is_us, p_code)
     if df_new is not None and not df_new.empty:
-        try: df_new.to_csv(file_path)
+        try: df_new.to_csv(file_path) 
         except: pass
         return df_new['close']
-    if os.path.exists(file_path):
+        
+    if os.path.exists(file_path): 
         try: return pd.read_csv(file_path, index_col=0, parse_dates=True)['close']
         except: pass
     return None
 
+# ==========================================
+# 🌟 核心黑科技：自建等权板块走势引擎
+# ==========================================
 @st.cache_data(ttl=3600)
-def load_data_v23(pool, bench, start, _force, is_us, p_code):
+def load_data_stable(pool, board_mapping, bench, start, _force, is_us, p_code):
     data, fails = {}, []
-    status = st.empty()
-    bar = st.progress(0)
+    status = st.empty(); bar = st.progress(0)
     
     status.text(f"读取基准: {bench}...")
     b_s = get_data_smart(bench, start, _force, is_us, p_code)
@@ -148,39 +217,71 @@ def load_data_v23(pool, bench, start, _force, is_us, p_code):
     data['__BENCH__'] = b_s
     full_idx = b_s.index
     
-    total = len(pool)
-    for i, (k, v) in enumerate(pool.items()):
-        status.text(f"读取数据 ({i+1}/{total}): {v}...")
-        bar.progress((i+1)/total)
+    # 第一步：下载并提取所有正股 (避开以 BK_ 开头的伪代码)
+    normal_items = {k: v for k, v in pool.items() if not str(k).startswith("BK_")}
+    bk_items = {k: v for k, v in pool.items() if str(k).startswith("BK_")}
+    
+    total = len(normal_items)
+    for i, (k, v) in enumerate(normal_items.items()):
+        status.text(f"安全同步数据 (固化后次日秒开) ({i+1}/{total}): {v}...")
+        bar.progress((i+1)/total if total > 0 else 1.0)
         s = get_data_smart(k, start, _force, is_us, p_code)
         if s is not None:
             s = s[~s.index.duplicated(keep='last')]
             data[v] = s.reindex(full_idx).ffill()
-        else: fails.append(v)
+        else:
+            fails.append(v)
             
+    # 第二步：本地合成各细分板块的等权走势 (完全不联网！)
+    if bk_items:
+        status.text("正在本地合成等权板块走势...")
+        for k, v in bk_items.items():
+            board_name = k[3:] # 剥离 "BK_"
+            codes = board_mapping.get(board_name, [])
+            valid_series = []
+            
+            for c in codes:
+                name = pool.get(c)
+                if name and name in data:
+                    s = data[name]
+                    first_valid = s.first_valid_index()
+                    # 归一化为 100 进行等权计算
+                    if first_valid is not None and s.loc[first_valid] != 0:
+                        norm_s = s / s.loc[first_valid] * 100
+                        valid_series.append(norm_s)
+            
+            if valid_series:
+                df_board = pd.concat(valid_series, axis=1)
+                data[v] = df_board.mean(axis=1) # 合成出板块的走势线！
+            else:
+                fails.append(v)
+
     status.empty(); bar.empty()
     return pd.DataFrame(data), fails
 
+# ==========================================
+# 5. 侧边栏交互 (无缝连通底层细分)
+# ==========================================
+board_mapping = {} # 用于向引擎传递“哪个板块包含哪些股票”的字典
+
 with st.sidebar:
-    st.title("🚀 全球 RRG (V23.1 完美修复版)")
-    market = st.selectbox("🌍 市场环境", ["🇨🇳 A股 (动态抓取)", "🇺🇸 美股 (高频接入)"], index=0)
-    is_us = "美股" in market
-    
-    st.divider()
     st.header("1️⃣ 视角选择")
-    level = st.radio("模式", ["Level 1: 全行业 ETF 轮动", "Level 2: 板块内抓龙头"])
+    market = st.selectbox("🌍 市场环境", ["🇨🇳 A股 (核心ETF透视底层)", "🇺🇸 美股 (网络直连)"], index=0)
+    is_us = "美股" in market
+    level = st.radio("模式", ["Level 1: 核心 ETF 轮动", "Level 2: 宏观赛道透视底层细分"])
     
-    if is_us:
+    if is_us: 
+        st.info("💡 提示: 美股数据首次加载需排队，已开启本地缓存机制！")
         BENCHMARK_DICT = {"标普500 (SPY)": "SPY", "纳斯达克 (QQQ)": "QQQ", "罗素2000 (IWM)": "IWM"}
-    else:
+    else: 
+        st.info("🛡️ 自动防封锁: 采用单线安全连接+本地自建指数合成。")
         BENCHMARK_DICT = {"沪深300 (机构)": "sh510300", "红利ETF (避险)": "sh510880", "中证2000 (游资)": "sh563300"}
         
-    bench_choice = st.selectbox("🎯 参照系基准 (中心)", list(BENCHMARK_DICT.keys()) + ["自定义输入"])
-    if bench_choice == "自定义输入": benchmark_code = st.text_input("代码", "SPY" if is_us else "sh510300").strip().upper()
+    bench_choice = st.selectbox("🎯 参照系基准", list(BENCHMARK_DICT.keys()) + ["自定义"])
+    if bench_choice == "自定义": benchmark_code = st.text_input("代码", "SPY" if is_us else "sh510300").strip().upper()
     else: benchmark_code = BENCHMARK_DICT[bench_choice]
-    st.caption(f"当前基准: {benchmark_code}")
-    
-    force_update = st.button("🔄 强制更新今日数据")
+        
+    st.caption(f"当前生效基准: {benchmark_code}")
     current_pool = {}
     
     if is_us:
@@ -189,34 +290,55 @@ with st.sidebar:
             if benchmark_code in current_pool: del current_pool[benchmark_code]
         else:
             sector_key = st.selectbox("选择美股板块", list(US_SECTOR_CONFIG.keys()))
-            cfg = US_SECTOR_CONFIG[sector_key]
-            benchmark_code = cfg['etf'] 
-            st.caption(f"板块基准自动切换为: {benchmark_code}")
-            current_pool = cfg['stocks']
+            benchmark_code = US_SECTOR_CONFIG[sector_key]['etf'] 
+            st.caption(f"自动切换基准: {benchmark_code}")
+            current_pool = US_SECTOR_CONFIG[sector_key]['stocks']
     else:
-        # 🚨 就是这里！修复了之前忘改名字的 Bug，把 SECTOR_CONFIG 改成了 A_SECTOR_CONFIG
         if "Level 1" in level:
-            current_pool = {v['etf']: k for k, v in A_SECTOR_CONFIG.items()}
+            current_pool = A_ETF_CONFIG.copy()
             if benchmark_code in current_pool: del current_pool[benchmark_code]
         else:
-            sector_key = st.selectbox("选择行业", list(A_SECTOR_CONFIG.keys()))
-            cfg = A_SECTOR_CONFIG[sector_key]
-            real_name, real_code = get_real_board_code(cfg['keyword'])
-            if real_name:
-                benchmark_code = cfg['etf'] 
-                st.caption(f"板块: {real_name} | 基准: {benchmark_code}")
-                top_n = st.slider("龙头数", 5, 50, 20)
-                with st.spinner("获取名单..."): current_pool = get_constituents_safe(real_name, top_n)
-            else: st.error("板块匹配失败")
+            # 🌟 V62 终极闭环：选赛道 -> 找细分 -> 删主ETF -> 合成细分走势
+            etf_options = {f"{name} ({code})": code for code, name in A_ETF_CONFIG.items()}
+            selected_label = st.selectbox("选择宏观赛道 (自动透视底层相关细分行业)", list(etf_options.keys()))
+            selected_etf_code = etf_options[selected_label]
+            
+            # 设置该宏观 ETF 为轮动中心系
+            benchmark_code = selected_etf_code
+            st.caption(f"🎯 中心基准已锁定为: {selected_label}")
+            
+            keywords = ETF_TO_KEYWORDS.get(selected_etf_code, [A_ETF_CONFIG[selected_etf_code].replace("ETF", "")])
+            sina_mapping = get_sina_board_mapping()
+            matched_boards = [board for board in sina_mapping.keys() if any(kw in board for kw in keywords)]
+            
+            st.caption(f"🔗 已穿透抓取新浪底层细分: {', '.join(matched_boards) if matched_boards else '宽基综合提取'}")
+            
+            top_n = st.slider("各细分板块截取前 N 只龙头", 5, 50, 15)
+            
+            with st.spinner("正在提取并准备本地合成算法..."):
+                # 注意：这里我们明确删除了主 ETF 的走势，转而为每个细分板块生成一条趋势线
+                for board in matched_boards:
+                    label = sina_mapping[board]
+                    board_stocks = get_constituents_safe(label, top_n)
+                    if board_stocks:
+                        # 加入底层龙头个股
+                        current_pool.update(board_stocks)
+                        # 记录此板块包含哪些个股代码，供引擎本地合成指数
+                        board_mapping[board] = list(board_stocks.keys())
+                        # 下达合成指令：加上“交运、公路”等板块自身的走势
+                        current_pool[f"BK_{board}"] = f"🌟 {board} (等权走势)"
+                
+                if not current_pool:
+                    st.error("🚨 提取失败或无对应细分，请检查网络。")
             
     extra = st.text_input("➕ 搅局者 (代码,名称)", "")
     if extra:
         p = extra.split(',')
-        current_pool[p[0].strip().upper() if is_us else p[0].strip()] = p[1].strip() if len(p)>1 else p[0].strip()
+        if is_us: current_pool[p[0].strip().upper()] = p[1].strip() if len(p)>1 else p[0].strip()
+        else: current_pool[p[0].strip()] = p[1].strip() if len(p)>1 else p[0].strip()
 
     st.divider()
     st.header("2️⃣ 参数 (引擎与尾气)")
-    
     if is_us:
         period_name = st.radio("时间周期", ["日线 (1d)", "周线 (1wk)", "1小时 (1h)", "15分钟 (15m)"], index=0)
         period_code = period_name.split('(')[1].replace(')', '')
@@ -225,11 +347,14 @@ with st.sidebar:
         period_code = 'W-FRI' if "周" in period else 'D'
         
     col1, col2 = st.columns(2)
-    with col1: window = st.number_input("RS窗口 (计算引擎)", 5, 60, 14, help="影响数据计算周期")
-    with col2: tail_len = st.number_input("拖尾 (视觉轨迹)", 1, 30, 8, help="影响画出多长的尾巴")
+    with col1: window = st.number_input("RS窗口", 5, 60, 14)
+    with col2: tail_len = st.number_input("拖尾长度", 1, 30, 8)
+
+    st.divider()
+    force_update = st.button("🔄 强制穿透刷新今日数据")
 
 # ==========================================
-# 4. 计算逻辑 (🌟 V23 核心：预平滑 Z-Score 模型)
+# 6. 计算逻辑 (还原黄金平滑算法)
 # ==========================================
 def calculate_rrg(df, period, window, tail):
     if period in ['D', '1d', '1h', '15m']: df_res = df
@@ -251,21 +376,15 @@ def calculate_rrg(df, period, window, tail):
         series = df_res[col]
         if series.notna().sum() < window + 5: continue
         
-        # 1. 相对强弱计算
         rs = series / bench
         
-        # 2. 预平滑
         rs_smooth = rs.ewm(span=5, adjust=False).mean()
-        
-        # 3. 真实的 Ratio
         rs_mean = rs_smooth.rolling(window).mean()
         rs_std = rs_smooth.rolling(window).std()
-        ratio = 100 + ((rs_smooth - rs_mean) / rs_std) * 1.5
         
-        # 4. 真实的 Momentum
+        ratio = 100 + ((rs_smooth - rs_mean) / rs_std) * 1.5
         mom = 100 + ((ratio - ratio.rolling(window).mean()) / ratio.rolling(window).std()) * 1.5
         
-        # 5. 画图渲染层平滑
         ratio = ratio.ewm(span=3, adjust=False).mean()
         mom = mom.ewm(span=3, adjust=False).mean()
         
@@ -275,28 +394,26 @@ def calculate_rrg(df, period, window, tail):
             try:
                 hist = temp.loc[:dt_obj].tail(tail + 1)
                 if len(hist) > 0 and not np.isnan(hist.iloc[-1]['R']):
-                    worm_data.append({
-                        'Frame': d_str,
-                        'Name': col,
-                        'X': hist['R'].tolist(),
-                        'Y': hist['M'].tolist(),
-                        'P': hist['P'].iloc[-1]
-                    })
+                    worm_data.append({'Frame': d_str, 'Name': col, 'X': hist['R'].tolist(), 'Y': hist['M'].tolist(), 'P': hist['P'].iloc[-1]})
             except: pass
             
     return pd.DataFrame(worm_data), str_dates, "OK"
 
 # ==========================================
-# 5. 主程序渲染
+# 7. 主程序渲染
 # ==========================================
 if st.button("🚀 开始分析", type="primary"):
     start_date = "2021-01-01"
-    raw_df, fails = load_data_v23(current_pool, benchmark_code, start_date, force_update, is_us, period_code)
     
-    if fails: st.toast(f"缺失: {len(fails)}", icon="⚠️")
+    # 将 board_mapping 传入，供底层合成指数使用
+    raw_df, fails = load_data_stable(current_pool, board_mapping, benchmark_code, start_date, force_update, is_us, period_code)
+    
+    if fails: st.toast(f"已自动过滤 {len(fails)} 只停牌或无数据资产", icon="✅")
     
     if raw_df is None:
-        st.error("❌ 基准数据获取失败！请检查网络。")
+        st.error("❌ 基准数据获取失败！")
+    elif not current_pool:
+        st.error("❌ 股票池为空！")
     else:
         worms, dates, msg = calculate_rrg(raw_df, period_code, window, tail_len)
         
@@ -310,6 +427,20 @@ if st.button("🚀 开始分析", type="primary"):
             add_q(90,100,90,100,"red"); add_q(100,110,90,100,"yellow")
             fig.add_hline(y=100, line_color="#444"); fig.add_vline(x=100, line_color="#444")
             
+            # --- 🌟 完美居中的艺术 Logo ---
+            logo_x, logo_y = 0.5, 0.96
+            fig.add_annotation(
+                text="◯", x=logo_x, y=logo_y, xref="paper", yref="paper",
+                xanchor="center", yanchor="middle",
+                showarrow=False, font=dict(size=120, color="rgba(0, 204, 150, 0.15)")
+            )
+            fig.add_annotation(
+                text="<span style='font-family: \"Arial Black\", Impact, sans-serif; font-style: italic; letter-spacing: 2px;'>ZF</span>", 
+                x=logo_x, y=logo_y, xref="paper", yref="paper",
+                xanchor="center", yanchor="middle",
+                showarrow=False, font=dict(size=45, color="rgba(0, 204, 150, 0.25)")
+            )
+
             fig.add_annotation(x=105,y=105,text="领先",showarrow=False,font=dict(color="green",size=16))
             fig.add_annotation(x=95,y=105,text="改善",showarrow=False,font=dict(color="cyan",size=16))
             fig.add_annotation(x=95,y=95,text="落后",showarrow=False,font=dict(color="red",size=16))
@@ -321,10 +452,16 @@ if st.button("🚀 开始分析", type="primary"):
             for name in worms['Name'].unique():
                 row = init[init['Name'] == name]
                 x, y = (row.iloc[0]['X'], row.iloc[0]['Y']) if not row.empty else ([],[])
+                
+                # 特殊高亮处理：对于自建的细分板块走势，加粗加亮
+                is_sector_line = "🌟" in name
+                line_width = 4 if is_sector_line else 2
+                marker_size = [6]*(len(x)-1)+[18] if is_sector_line else [4]*(len(x)-1)+[14]
+                
                 fig.add_trace(go.Scatter(
                     x=x, y=y, mode='lines+markers', name=name, 
-                    marker=dict(size=[4]*(len(x)-1)+[14], line=dict(width=1,color='white')),
-                    line=dict(width=2, shape='spline', smoothing=1.3)
+                    marker=dict(size=marker_size, line=dict(width=1,color='white')),
+                    line=dict(width=line_width, shape='spline', smoothing=1.3)
                 ))
             
             frames = []
@@ -333,33 +470,30 @@ if st.button("🚀 开始分析", type="primary"):
                 frm = worms[worms['Frame'] == d]
                 for name in worms['Name'].unique():
                     r = frm[frm['Name'] == name]
-                    fd.append(go.Scatter(x=r.iloc[0]['X'], y=r.iloc[0]['Y']) if not r.empty else go.Scatter(x=[],y=[]))
+                    x_fd = r.iloc[0]['X'] if not r.empty else []
+                    y_fd = r.iloc[0]['Y'] if not r.empty else []
+                    fd.append(go.Scatter(x=x_fd, y=y_fd))
                 frames.append(go.Frame(data=fd, name=d))
             fig.frames = frames
             
+            btn_play = dict(label="▶️ 播放", method="animate", args=[None, dict(frame=dict(duration=150, redraw=True), fromcurrent=True)])
+            btn_pause = dict(label="⏸️ 暂停", method="animate", args=[[None], dict(mode="immediate")])
+            menu_dict = dict(type="buttons", direction="left", buttons=[btn_play, btn_pause], pad={"r": 10, "t": 10}, showactive=True, x=0.0, xanchor="left", y=1.15, yanchor="bottom")
+            
             fig.update_layout(
-                title=f"RRG 轮动图 ({last_d})", 
-                template="plotly_dark", 
-                height=850, margin=dict(t=100),
+                title=f"RRG 轮动图 ({last_d})", template="plotly_dark", 
+                height=880, 
+                margin=dict(t=100, b=180),
                 xaxis=dict(range=[94,106], title="RS-Ratio (趋势)"), 
                 yaxis=dict(range=[94,106], title="RS-Mom (动能)"),
-                legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-                updatemenus=[dict(
-                    type="buttons", direction="left",
-                    buttons=[
-                        dict(label="▶️ 播放", method="animate", args=[None, dict(frame=dict(duration=150, redraw=True), fromcurrent=True)]),
-                        dict(label="⏸️ 暂停", method="animate", args=[[None], dict(mode="immediate")])
-                    ],
-                    pad={"r": 10, "t": 10}, showactive=True, x=0.0, xanchor="left", y=1.15, yanchor="bottom"
-                )],
-                sliders=[dict(steps=[dict(method='animate', args=[[d], dict(mode='immediate')], label=d) for d in dates])]
+                legend=dict(orientation="h", yanchor="top", y=-0.28, xanchor="center", x=0.5),
+                updatemenus=[menu_dict], sliders=[dict(steps=[dict(method='animate', args=[[d], dict(mode='immediate')], label=d) for d in dates])]
             )
             
             st.plotly_chart(fig, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True, 'modeBarButtonsToRemove': ['autoScale2d']})
             
             st.divider()
             st.subheader("🚨 雷达监控区：主升浪与底部抢筹发现器")
-            
             burst_list = []
             for _, row in init.iterrows():
                 x_t, y_t = row['X'], row['Y']
@@ -369,10 +503,11 @@ if st.button("🚀 开始分析", type="primary"):
                     sig = None
                     if cx > 100 and cy > 100 and dx > 0.1 and dy > 0.1: sig = "🔥 强者恒强 (右侧主升浪)"
                     elif dy > 0.8 and abs(dx) < 0.5 and cx < 101: sig = "🚀 底部抢筹 (垂直爆发)"
-                    if sig: burst_list.append({'标的': row['Name'], '信号类型': sig, '最新价': row['P'], '动能(ΔY)': dy, '趋势(ΔX)': dx, '当前X': cx, '当前Y': cy})
+                    if sig: burst_list.append({'标的': row['Name'], '信号': sig, '最新价': row['P'], '动能ΔY': dy, '趋势ΔX': dx})
             
             if burst_list:
-                b_df = pd.DataFrame(burst_list).sort_values(by=['信号类型', '动能(ΔY)'], ascending=[True, False])
-                st.success(f"雷达发现 {len(b_df)} 只异动标的 👇")
-                st.dataframe(b_df.set_index('标的'), use_container_width=True, column_config={"动能(ΔY)": st.column_config.NumberColumn(format="%+.2f"), "趋势(ΔX)": st.column_config.NumberColumn(format="%+.2f")})
+                b_df = pd.DataFrame(burst_list).sort_values(by=['信号', '动能ΔY'], ascending=[True, False])
+                st.success(f"发现 {len(b_df)} 只异动标的 👇")
+                col_cfg = {"动能ΔY": st.column_config.NumberColumn(format="%+.2f"), "趋势ΔX": st.column_config.NumberColumn(format="%+.2f")}
+                st.dataframe(b_df.set_index('标的'), use_container_width=True, column_config=col_cfg)
             else: st.info("🟢 当前扫描无异动标的。")
